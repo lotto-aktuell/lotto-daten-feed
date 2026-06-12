@@ -160,7 +160,7 @@ function parseCsv(text, label){
   const splitDate = dateIdx < 0 && tagIdx >= 0 && monatIdx >= 0 && jahrIdx >= 0;
   if (dateIdx < 0 && !splitDate) die(`${label}: keine Datums-Spalte(n) — Header: ${head.join(' | ')}`);
 
-  // Gewinnzahlen 1–6: gängige Schreibweisen abdecken
+  // Gewinnzahlen: entweder 6 einzelne Spalten ODER eine Kombi-Spalte "Gewinnzahlen"
   const numIdx = [];
   for (let k = 1; k <= 6; k++) {
     const i = head.findIndex(h =>
@@ -168,26 +168,49 @@ function parseCsv(text, label){
       new RegExp(`^${k}\\.?\\s*(lotto|gewinn)?zahl$`).test(h) ||      // 1. Zahl
       h === 'z' + k
     );
-    if (i < 0) die(`${label}: Spalte für Zahl ${k} nicht gefunden — Header: ${head.join(' | ')}`);
+    if (i < 0) break;
     numIdx.push(i);
   }
-  const szIdx = head.findIndex(h => /superzahl/.test(h)); // Zusatzzahl/Spiel77/Super6 bewusst ignoriert
-  log(`${label}: Header Zeile ${headIdx+1}, Trennzeichen "${delim}", Datum→${splitDate?'Tag/Monat/Jahr':dateIdx}, Zahlen→[${numIdx}], Superzahl→${szIdx<0?'keine':szIdx}`);
+  // Kombi-Modus (WestLotto-Archiv): Spalte "Gewinnzahlen" enthält alle 6 Zahlen;
+  // ggf. sind sie in den Datenzeilen auch auf mehrere Felder verteilt — der Header
+  // bleibt dabei kürzer als die Datenzeile, das gleichen wir pro Zeile aus.
+  const gzIdx = numIdx.length === 6 ? -1 : head.findIndex(h => /^gewinnzahlen$/.test(h) || /^zahlen$/.test(h));
+  if (numIdx.length !== 6 && gzIdx < 0)
+    die(`${label}: weder 6 Zahlen-Spalten noch eine "Gewinnzahlen"-Spalte gefunden — Header: ${head.join(' | ')}`);
+  // Superzahl: "Superzahl" oder Kurzform "S"; Zusatzzahl (ZZ)/Spiel77/Super6 ignoriert
+  const szIdx = head.findIndex(h => /superzahl/.test(h) || h === 's');
+  log(`${label}: Header Zeile ${headIdx+1}, Trennzeichen "${delim}", Datum→${splitDate?'Tag/Monat/Jahr':dateIdx}, Zahlen→${gzIdx>=0?`Kombi-Spalte ${gzIdx}`:`[${numIdx}]`}, Superzahl→${szIdx<0?'keine':szIdx}`);
 
   const draws = [];
   for (let li = headIdx + 1; li < lines.length; li++) {
     const f = lines[li].split(delim).map(x => x.trim().replace(/^"|"$/g, ''));
-    if (f.length <= Math.max(splitDate ? jahrIdx : dateIdx, ...numIdx)) continue;
+    if (f.length <= (splitDate ? jahrIdx : dateIdx)) continue;
     const iso = splitDate
       ? parseDate(`${f[tagIdx]}.${f[monatIdx]}.${f[jahrIdx]}`)
       : parseDate(f[dateIdx]);
     if (!iso) continue; // Fuß-/Leerzeilen überspringen
-    const n = numIdx.map(i => parseInt(f[i], 10));
+
+    // Datenzeilen können mehr Felder haben als der Header (verteilte Zahlen) —
+    // Spalten NACH der Gewinnzahlen-Spalte verschieben sich entsprechend.
+    const shift = gzIdx >= 0 ? Math.max(0, f.length - head.length) : 0;
+    let n;
+    if (gzIdx >= 0) {
+      const region = f.slice(gzIdx, gzIdx + 1 + shift).join(' ');
+      const found = (region.match(/\d+/g) || []).map(Number);
+      if (found.length < 6) { log(`  übersprungen (keine 6 Zahlen): ${lines[li].slice(0,80)}`); continue; }
+      n = found.slice(0, 6);
+    } else {
+      n = numIdx.map(i => parseInt(f[i], 10));
+    }
     if (n.some(x => !Number.isInteger(x))) { log(`  übersprungen (Zahlen unlesbar): ${lines[li].slice(0,80)}`); continue; }
     let sz = null;
-    if (szIdx >= 0 && f[szIdx] !== '' && f[szIdx] != null) {
-      const v = parseInt(f[szIdx], 10);
-      if (Number.isInteger(v) && v >= 0 && v <= 9) sz = v;
+    if (szIdx >= 0) {
+      const sIdx = szIdx > gzIdx && gzIdx >= 0 ? szIdx + shift : szIdx;
+      const raw = f[sIdx];
+      if (raw !== '' && raw != null) {
+        const v = parseInt(raw, 10);
+        if (Number.isInteger(v) && v >= 0 && v <= 9) sz = v;
+      }
     }
     if (sz != null && iso < SZ_SEIT) sz = null; // vor Einführung keine Superzahl
     draws.push({ d: iso, n: [...n].sort((a,b)=>a-b), sz });
