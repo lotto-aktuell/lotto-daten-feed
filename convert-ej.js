@@ -170,11 +170,11 @@ function parseCsv(text, label){
     if (i < 0) break;
     numIdx.push(i);
   }
-  const gzIdx = numIdx.length === 5 ? -1 : head.findIndex(h => /^gewinnzahlen$/.test(h) || /^zahlen$/.test(h));
+  const gzIdx = numIdx.length === 5 ? -1 : head.findIndex(h => /^gewinnzahlen$/.test(h) || /^zahlen$/.test(h) || /^5\s*aus\s*50$/.test(h));
   if (numIdx.length !== 5 && gzIdx < 0)
     die(`${label}: weder 5 Zahlen-Spalten noch eine "Gewinnzahlen"-Spalte gefunden — Header: ${head.join(' | ')}`);
   // Eurozahlen: Kombi-Spalte "Eurozahlen" ODER zwei einzelne Spalten
-  const ezKombiIdx = head.findIndex(h => /^eurozahlen$/.test(h));
+  const ezKombiIdx = head.findIndex(h => /^eurozahlen$/.test(h) || /^ez$/.test(h) || /^2\s*aus\s*1[02]$/.test(h));
   const ezIdx = [];
   if (ezKombiIdx < 0) {
     for (let k = 1; k <= 2; k++) {
