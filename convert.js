@@ -30,8 +30,13 @@
 //
 //   Die Quellen werden der Reihe nach eingelesen und per Datum zusammengeführt.
 const CSV_SOURCES = [
-  // 'seed/lotto-archiv-bis-2018.csv',
-  // { url: 'https://www.sachsenlotto.de/…', method: 'POST', body: { … } },
+  {
+    url: 'https://www.westlotto.de/wlinfo/WL_InfoService'
+       + '?gruppe=ErgebnisDownload&client=wldl'
+       + '&jahr_von=1955&jahr_bis={{AKTUELLES_JAHR}}'
+       + '&spielart=LOTTO&format=csv',
+    headers: { 'Referer': 'https://www.sachsenlotto.de/' }
+  },
 ];
 
 const QUELLE = 'Offizielles Gewinnzahlen-Archiv (sachsenlotto.de / Landeslotterie)';
@@ -50,7 +55,8 @@ function log(...a){ console.log('•', ...a); }
 
 // ── CSV laden (Datei oder URL), Encoding tolerant (UTF-8 / Latin-1) ──
 async function loadCsv(src){
-  const conf = typeof src === 'string' ? { url: src } : src;
+  const conf = typeof src === 'string' ? { url: src } : { ...src };
+  conf.url = conf.url.replace('{{AKTUELLES_JAHR}}', String(new Date().getFullYear()));
   let buf;
   if (/^https?:/i.test(conf.url)) {
     const opts = {
@@ -85,26 +91,40 @@ function parseCsv(text, label){
   if (!lines.length) die(`${label}: leere Datei`);
   const delim = (lines[0].split(';').length >= lines[0].split(',').length) ? ';' : ',';
 
-  // Header-Zeile suchen (enthält "Datum")
-  let headIdx = lines.findIndex(l => /datum/i.test(l));
-  if (headIdx < 0) die(`${label}: keine Header-Zeile mit "Datum" gefunden — Format prüfen (erste Zeile: ${lines[0].slice(0,120)})`);
+  // Header-Zeile suchen ("Datum" oder getrennte Tag/Monat/Jahr-Spalten)
+  let headIdx = lines.findIndex(l => /datum/i.test(l) || (/\btag\b/i.test(l) && /monat/i.test(l) && /jahr/i.test(l)));
+  if (headIdx < 0) die(`${label}: keine Header-Zeile gefunden — Format prüfen (erste Zeile: ${lines[0].slice(0,120)})`);
   const head = lines[headIdx].split(delim).map(h => h.trim().toLowerCase());
 
+  // Datum: entweder eine Datums-Spalte oder Tag/Monat/Jahr getrennt
   const dateIdx = head.findIndex(h => /datum/.test(h));
+  const tagIdx = head.findIndex(h => h === 'tag');
+  const monatIdx = head.findIndex(h => h === 'monat');
+  const jahrIdx = head.findIndex(h => h === 'jahr');
+  const splitDate = dateIdx < 0 && tagIdx >= 0 && monatIdx >= 0 && jahrIdx >= 0;
+  if (dateIdx < 0 && !splitDate) die(`${label}: keine Datums-Spalte(n) — Header: ${head.join(' | ')}`);
+
+  // Gewinnzahlen 1–6: gängige Schreibweisen abdecken
   const numIdx = [];
   for (let k = 1; k <= 6; k++) {
-    const i = head.findIndex(h => new RegExp(`^(lotto)?(gewinn)?zahl[ _-]?${k}$`).test(h) || h === 'z' + k);
+    const i = head.findIndex(h =>
+      new RegExp(`^(lotto)?(gewinn)?zahl[ _-]?${k}$`).test(h) ||      // Zahl1, Gewinnzahl 1
+      new RegExp(`^${k}\\.?\\s*(lotto|gewinn)?zahl$`).test(h) ||      // 1. Zahl
+      h === 'z' + k
+    );
     if (i < 0) die(`${label}: Spalte für Zahl ${k} nicht gefunden — Header: ${head.join(' | ')}`);
     numIdx.push(i);
   }
   const szIdx = head.findIndex(h => /superzahl/.test(h)); // Zusatzzahl/Spiel77/Super6 bewusst ignoriert
-  log(`${label}: Header Zeile ${headIdx+1}, Trennzeichen "${delim}", Datum→${dateIdx}, Zahlen→[${numIdx}], Superzahl→${szIdx<0?'keine':szIdx}`);
+  log(`${label}: Header Zeile ${headIdx+1}, Trennzeichen "${delim}", Datum→${splitDate?'Tag/Monat/Jahr':dateIdx}, Zahlen→[${numIdx}], Superzahl→${szIdx<0?'keine':szIdx}`);
 
   const draws = [];
   for (let li = headIdx + 1; li < lines.length; li++) {
     const f = lines[li].split(delim).map(x => x.trim().replace(/^"|"$/g, ''));
-    if (f.length <= Math.max(dateIdx, ...numIdx)) continue;
-    const iso = parseDate(f[dateIdx]);
+    if (f.length <= Math.max(splitDate ? jahrIdx : dateIdx, ...numIdx)) continue;
+    const iso = splitDate
+      ? parseDate(`${f[tagIdx]}.${f[monatIdx]}.${f[jahrIdx]}`)
+      : parseDate(f[dateIdx]);
     if (!iso) continue; // Fuß-/Leerzeilen überspringen
     const n = numIdx.map(i => parseInt(f[i], 10));
     if (n.some(x => !Number.isInteger(x))) { log(`  übersprungen (Zahlen unlesbar): ${lines[li].slice(0,80)}`); continue; }
