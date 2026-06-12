@@ -54,7 +54,52 @@ function die(msg){ console.error('✗ FEHLER:', msg); process.exit(1); }
 function log(...a){ console.log('•', ...a); }
 
 // ── CSV laden (Datei oder URL), Encoding tolerant (UTF-8 / Latin-1) ──
-async function loadCsv(src){
+function decodeText(buf){
+  let text = buf.toString('utf8');
+  if (text.includes('\uFFFD')) text = buf.toString('latin1'); // deutsche Umlaute in Latin-1
+  return text.replace(/^\uFEFF/, '');
+}
+
+// ZIP-Archiv entpacken (Standard-ZIP, Deflate/Stored) — ohne Zusatzpakete.
+// Liest das Inhaltsverzeichnis am Dateiende und extrahiert alle Einträge.
+function unzipAll(buf){
+  const zlib = require('zlib');
+  // End-of-Central-Directory-Signatur (PK\x05\x06) im letzten Stück suchen
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) die('ZIP-Archiv: Inhaltsverzeichnis nicht gefunden');
+  const count = buf.readUInt16LE(eocd + 10);
+  let pos = buf.readUInt32LE(eocd + 16); // Offset des Central Directory
+  const entries = [];
+  for (let e = 0; e < count; e++) {
+    if (buf.readUInt32LE(pos) !== 0x02014b50) die('ZIP-Archiv: Verzeichniseintrag beschädigt');
+    const method   = buf.readUInt16LE(pos + 10);
+    const compSize = buf.readUInt32LE(pos + 20);
+    const nameLen  = buf.readUInt16LE(pos + 28);
+    const extraLen = buf.readUInt16LE(pos + 30);
+    const commLen  = buf.readUInt16LE(pos + 32);
+    const lhOff    = buf.readUInt32LE(pos + 42);
+    const name = buf.slice(pos + 46, pos + 46 + nameLen).toString('latin1');
+    // Datenposition über den lokalen Header ermitteln
+    if (buf.readUInt32LE(lhOff) !== 0x04034b50) die('ZIP-Archiv: lokaler Header beschädigt');
+    const lhName  = buf.readUInt16LE(lhOff + 26);
+    const lhExtra = buf.readUInt16LE(lhOff + 28);
+    const dataStart = lhOff + 30 + lhName + lhExtra;
+    const comp = buf.slice(dataStart, dataStart + compSize);
+    let data;
+    if (method === 8) data = zlib.inflateRawSync(comp);
+    else if (method === 0) data = comp;
+    else die(`ZIP-Archiv: Kompressionsmethode ${method} nicht unterstützt (${name})`);
+    if (!name.endsWith('/')) entries.push({ name, data });
+    pos += 46 + nameLen + extraLen + commLen;
+  }
+  return entries;
+}
+
+// Lädt eine Quelle und liefert 1..n CSV-Texte (ZIP wird automatisch entpackt)
+async function loadSource(src){
   const conf = typeof src === 'string' ? { url: src } : { ...src };
   conf.url = conf.url.replace('{{AKTUELLES_JAHR}}', String(new Date().getFullYear()));
   let buf;
@@ -72,17 +117,28 @@ async function loadCsv(src){
     const res = await fetch(conf.url, opts);
     if (!res.ok) die(`HTTP ${res.status} bei ${conf.url}`);
     buf = Buffer.from(await res.arrayBuffer());
-    const head = buf.slice(0, 200).toString('utf8');
-    if (/<html|<!doctype/i.test(head))
-      die(`${conf.url} liefert HTML statt CSV — URL/Formularfelder prüfen (DevTools-Anleitung in README). Anfang der Antwort: ${head.slice(0,120)}`);
   } else {
     const p = path.isAbsolute(conf.url) ? conf.url : path.join(__dirname, conf.url);
     log('lese Datei', p);
     buf = fs.readFileSync(p);
   }
-  let text = buf.toString('utf8');
-  if (text.includes('\uFFFD')) text = buf.toString('latin1'); // deutsche Umlaute in Latin-1
-  return text.replace(/^\uFEFF/, '');
+
+  // ZIP? (Signatur "PK") → entpacken, CSV-Einträge verwenden
+  if (buf.length > 4 && buf.readUInt32LE(0) === 0x04034b50) {
+    const all = unzipAll(buf);
+    let files = all.filter(e => /\.csv$/i.test(e.name));
+    if (!files.length) files = all;
+    if (!files.length) die('ZIP-Archiv ist leer');
+    log(`ZIP entpackt: ${all.map(e=>e.name).join(', ')}`);
+    return files.map(e => ({ name: e.name, text: decodeText(e.data) }));
+  }
+
+  const head = buf.slice(0, 200).toString('utf8');
+  if (/<html|<!doctype/i.test(head))
+    die(`${conf.url} liefert HTML statt CSV — URL/Formularfelder prüfen (DevTools-Anleitung in README). Anfang der Antwort: ${head.slice(0,120)}`);
+
+  const label = path.basename(String(conf.url)).slice(0, 40) || 'Quelle';
+  return [{ name: label, text: decodeText(buf) }];
 }
 
 // ── Parser: Header-gesteuert, Spalten werden über Namen erkannt ──
@@ -175,8 +231,9 @@ function checkDraw(dr){
 
   let added = 0, conflicts = 0;
   for (const src of sources) {
-    const label = path.basename(String(typeof src === 'string' ? src : src.url)).slice(0, 40) || 'Quelle';
-    const draws = parseCsv(await loadCsv(src), label);
+    const parts = await loadSource(src);
+    const draws = [];
+    for (const part of parts) draws.push(...parseCsv(part.text, part.name.slice(0, 40)));
     for (const dr of draws) {
       const err = checkDraw(dr);
       if (err) die(`ungültige Ziehung am ${dr.d}: ${err} → ${JSON.stringify(dr)}`);
