@@ -14,12 +14,24 @@
  *   node convert.js --out pfad.json      → abweichende Ausgabedatei
  */
 
-// ► HIER die Download-URL(s) der offiziellen CSV eintragen.
-//   Anleitung: sachsenlotto.de → Zahlen & Quoten → Download-Archiv →
-//   Spielart "LOTTO 6aus49", Format CSV → Rechtsklick auf "Download starten"
-//   → "Link-Adresse kopieren". Mehrere URLs (z. B. Jahres-Dateien) sind erlaubt.
+// ► HIER die offiziellen Quellen eintragen. Drei Formen sind erlaubt:
+//
+//   1. Direkte URL (GET):
+//      'https://…/gewinnzahlen.csv',
+//
+//   2. Dynamischer Endpoint (POST-Formular, z. B. Sachsenlotto "Download starten").
+//      URL + Formularfelder per Entwicklertools ermitteln (Anleitung in README):
+//      { url: 'https://www.sachsenlotto.de/portal/…/download.do',
+//        method: 'POST',
+//        body: { spielart: 'LOTTO', format: 'csv' } },   // Felder aus DevTools
+//
+//   3. Datei im Repo (z. B. einmalig manuell heruntergeladenes Voll-Archiv):
+//      'seed/lotto-archiv-bis-2018.csv',
+//
+//   Die Quellen werden der Reihe nach eingelesen und per Datum zusammengeführt.
 const CSV_SOURCES = [
-  // 'https://www.sachsenlotto.de/...&format=csv&spielart=LOTTO6aus49...',
+  // 'seed/lotto-archiv-bis-2018.csv',
+  // { url: 'https://www.sachsenlotto.de/…', method: 'POST', body: { … } },
 ];
 
 const QUELLE = 'Offizielles Gewinnzahlen-Archiv (sachsenlotto.de / Landeslotterie)';
@@ -38,15 +50,29 @@ function log(...a){ console.log('•', ...a); }
 
 // ── CSV laden (Datei oder URL), Encoding tolerant (UTF-8 / Latin-1) ──
 async function loadCsv(src){
+  const conf = typeof src === 'string' ? { url: src } : src;
   let buf;
-  if (/^https?:/i.test(src)) {
-    log('lade', src);
-    const res = await fetch(src, { headers: { 'User-Agent': 'lotto-daten-feed (privater Statistik-Feed)' } });
-    if (!res.ok) die(`HTTP ${res.status} bei ${src}`);
+  if (/^https?:/i.test(conf.url)) {
+    const opts = {
+      method: conf.method || 'GET',
+      headers: Object.assign(
+        { 'User-Agent': 'Mozilla/5.0 (lotto-daten-feed; privater Statistik-Feed)' },
+        conf.body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {},
+        conf.headers || {}
+      )
+    };
+    if (conf.body) opts.body = new URLSearchParams(conf.body).toString();
+    log('lade', opts.method, conf.url, conf.body ? 'mit Formulardaten ' + JSON.stringify(conf.body) : '');
+    const res = await fetch(conf.url, opts);
+    if (!res.ok) die(`HTTP ${res.status} bei ${conf.url}`);
     buf = Buffer.from(await res.arrayBuffer());
+    const head = buf.slice(0, 200).toString('utf8');
+    if (/<html|<!doctype/i.test(head))
+      die(`${conf.url} liefert HTML statt CSV — URL/Formularfelder prüfen (DevTools-Anleitung in README). Anfang der Antwort: ${head.slice(0,120)}`);
   } else {
-    log('lese Datei', src);
-    buf = fs.readFileSync(src);
+    const p = path.isAbsolute(conf.url) ? conf.url : path.join(__dirname, conf.url);
+    log('lese Datei', p);
+    buf = fs.readFileSync(p);
   }
   let text = buf.toString('utf8');
   if (text.includes('\uFFFD')) text = buf.toString('latin1'); // deutsche Umlaute in Latin-1
@@ -129,7 +155,8 @@ function checkDraw(dr){
 
   let added = 0, conflicts = 0;
   for (const src of sources) {
-    const draws = parseCsv(await loadCsv(src), path.basename(String(src)).slice(0, 40));
+    const label = path.basename(String(typeof src === 'string' ? src : src.url)).slice(0, 40) || 'Quelle';
+    const draws = parseCsv(await loadCsv(src), label);
     for (const dr of draws) {
       const err = checkDraw(dr);
       if (err) die(`ungültige Ziehung am ${dr.d}: ${err} → ${JSON.stringify(dr)}`);
