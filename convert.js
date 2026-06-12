@@ -243,16 +243,24 @@ function checkDraw(dr){
   const sources = LOCAL ? [LOCAL] : CSV_SOURCES;
   if (!sources.length) die('Keine Quelle: CSV_SOURCES in convert.js eintragen oder --file nutzen (siehe README).');
 
-  // Bestehenden Feed laden (Merge-Basis)
+  // Bestehenden Feed laden (Merge-Basis). Pro Datum eine LISTE von Ziehungen:
+  // Das Mittwochslotto hatte bis Dezember 2000 zwei Ziehungen pro Abend —
+  // beide sind echte Ziehungen und werden erhalten.
+  const DUAL_BIS = '2001-01-01';
   const byDate = new Map();
+  let total = 0;
   if (fs.existsSync(OUT)) {
     const prev = JSON.parse(fs.readFileSync(OUT, 'utf8'));
-    for (const dr of (prev.draws || [])) byDate.set(dr.d, dr);
-    log(`bestehender Feed: ${byDate.size} Ziehungen (Stand ${prev.meta && prev.meta.stand})`);
+    for (const dr of (prev.draws || [])) {
+      if (!byDate.has(dr.d)) byDate.set(dr.d, []);
+      byDate.get(dr.d).push(dr); total++;
+    }
+    log(`bestehender Feed: ${total} Ziehungen (Stand ${prev.meta && prev.meta.stand})`);
   }
-  const prevCount = byDate.size;
+  const prevCount = total;
 
   let added = 0, conflicts = 0;
+  const same = (a, b) => JSON.stringify(a.n) === JSON.stringify(b.n) && a.sz === b.sz;
   for (const src of sources) {
     const parts = await loadSource(src);
     const draws = [];
@@ -260,18 +268,22 @@ function checkDraw(dr){
     for (const dr of draws) {
       const err = checkDraw(dr);
       if (err) die(`ungültige Ziehung am ${dr.d}: ${err} → ${JSON.stringify(dr)}`);
-      const old = byDate.get(dr.d);
-      if (old) {
-        if (JSON.stringify(old.n) !== JSON.stringify(dr.n) || old.sz !== dr.sz) {
-          conflicts++;
-          console.warn(`⚠ Konflikt am ${dr.d}: vorhanden ${JSON.stringify(old)} vs. neu ${JSON.stringify(dr)} — Quelle übernimmt`);
-        }
-        byDate.set(dr.d, dr);
-      } else { byDate.set(dr.d, dr); added++; }
+      const list = byDate.get(dr.d) || [];
+      if (list.some(x => same(x, dr))) continue;            // exakt vorhanden → überspringen
+      if (list.length === 0) { list.push(dr); added++; }
+      else if (dr.d < DUAL_BIS && list.length < 2) { list.push(dr); added++; } // 2. Mittwochsziehung
+      else {
+        conflicts++;
+        console.warn(`⚠ Konflikt am ${dr.d}: vorhanden ${JSON.stringify(list)} vs. neu ${JSON.stringify(dr)} — Quelle übernimmt`);
+        list.length = 0; list.push(dr);
+      }
+      byDate.set(dr.d, list);
     }
   }
 
-  const all = [...byDate.values()].sort((a,b) => a.d < b.d ? -1 : 1);
+  const all = [...byDate.entries()].sort((a,b) => a[0] < b[0] ? -1 : 1).flatMap(e => e[1]);
+  const dualDays = [...byDate.values()].filter(l => l.length === 2).length;
+  if (dualDays) log(`${dualDays} Termine mit zwei Ziehungen (Mittwochslotto bis 2000) erhalten`);
   if (all.length < prevCount) die('Ergebnis hätte weniger Ziehungen als zuvor — Abbruch zum Schutz der Historie');
   if (all.length < 5000 && !LOCAL)
     console.warn(`⚠ Nur ${all.length} Ziehungen insgesamt — für die App-Validierung sind ≥5000 nötig (ggf. einmalig per --file mit Voll-Archiv seeden).`);
