@@ -13,12 +13,28 @@ automatisch die letzten bekannten Daten (Cache → eingebettete Basis).
 1. **Repo anlegen:** Neues öffentliches GitHub-Repo, z. B. `lotto-daten-feed`.
    Alle Dateien aus diesem Ordner hineinladen (inkl. `.github/`-Ordner!).
 
-2. **CSV-Quelle eintragen:** Auf sachsenlotto.de → *Zahlen & Quoten →
-   Gewinnzahlen → Download-Archiv* die Spielart **LOTTO 6aus49** und Format
-   **CSV** wählen. Rechtsklick auf „Download starten" → **Link-Adresse
-   kopieren** und in `convert.js` bei `CSV_SOURCES` eintragen.
-   (Falls der Link dynamisch ist: Browser-Entwicklertools → Netzwerk-Tab →
-   Download auslösen → URL der CSV-Anfrage kopieren. WestLotto geht analog.)
+2. **CSV-Quelle eintragen** — Sachsenlotto erzeugt die Datei dynamisch,
+   deshalb über die Entwicklertools ermitteln:
+   1. Download-Seite öffnen, **F12** drücken → Tab **Netzwerk** (Network).
+   2. Spielart **LOTTO 6aus49** + **CSV** wählen → „Download starten" klicken.
+   3. Im Netzwerk-Tab erscheint die Anfrage, die die CSV liefert (erkennbar
+      an Typ/Größe; oft endet sie auf `.do` oder `.jsp`). Anklicken.
+   4. **Methode** ablesen (GET oder POST):
+      - **GET** → Rechtsklick auf die Anfrage → *Copy URL* → als String in
+        `CSV_SOURCES` eintragen.
+      - **POST** → im Reiter *Payload/Nutzdaten* die Formularfelder ablesen
+        und als Objekt eintragen:
+        `{ url: '…', method: 'POST', body: { feldname: 'wert', … } }`
+   5. Liefert der Endpoint HTML statt CSV, bricht der Konverter mit einer
+      klaren Meldung ab — dann Felder/URL erneut prüfen.
+
+   **Historisches Voll-Archiv (einmalig):** Die Download-Seite verlinkt für
+   Daten bis Ende 2018 auf den WestLotto-Infoservice
+   (`ergebnisse.westlotto.com/infoservice/sachsen/downloads/downloads.html`).
+   Dort die 6aus49-Datei im Browser herunterladen, im Repo über
+   *Add file → Upload files* in einen Ordner `seed/` hochladen und als
+   erste Quelle eintragen: `'seed/DATEINAME.csv'`. Der Merge ergänzt dann
+   nur noch die neueren Ziehungen aus dem dynamischen Endpoint.
 
 3. **Erstbefüllung testen:** Im Repo → Tab *Actions* → Workflow
    „Lotto-Daten aktualisieren" → **Run workflow**. Im Log prüfen, wie viele
